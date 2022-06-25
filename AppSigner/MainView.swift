@@ -715,6 +715,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
         }
         
         //MARK: Process input file
+        var isiOSAppOnTheMac = false
         switch(inputFile.pathExtension.lowercased()){
         case "deb":
             //MARK: --Unpack deb
@@ -783,6 +784,24 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
             if !inputIsDirectory.boolValue {
                 setStatus("Unsupported input file")
                 cleanup(tempFolder); return
+            }
+            var isWrapperADirectory: ObjCBool = false
+            let iOSAppOnTheMacBundlePath = inputFile
+                .stringByAppendingPathComponent("Wrapper")
+                .stringByAppendingPathComponent(inputFile.lastPathComponent)
+            if fileManager.fileExists(atPath: iOSAppOnTheMacBundlePath, isDirectory: &isWrapperADirectory) &&
+                isWrapperADirectory.boolValue {
+                do {
+                    try fileManager.createDirectory(atPath: payloadDirectory, withIntermediateDirectories: true, attributes: nil)
+                    setStatus("Copying app to payload directory")
+                    try fileManager.copyItem(atPath: iOSAppOnTheMacBundlePath, toPath: payloadDirectory.stringByAppendingPathComponent(inputFile.lastPathComponent))
+                    isiOSAppOnTheMac = true
+                    break
+                } catch {
+                    setStatus("Error copying app to payload directory")
+                    cleanup(tempFolder);
+                    return
+                }
             }
             do {
                 try fileManager.createDirectory(atPath: payloadDirectory, withIntermediateDirectories: true, attributes: nil)
@@ -907,7 +926,6 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
                 
                 //MARK: Change Application ID
                 if newApplicationID != "" {
-                    
                     if let oldAppID = bundleID {
                         func changeAppexID(_ appexFile: String){
                             guard allowRecursiveSearchAt(appexFile.stringByDeletingLastPathComponent) else {
@@ -1027,7 +1045,7 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
                     recursiveDirectorySearch(currentEggPath, extensions: ["egg"], found: signEgg)
                     recursiveDirectorySearch(currentEggPath, extensions: signableExtensions, found: eggSigningFunction)
                     setStatus("Compressing \(shortName)")
-                    _ = self.zip(currentEggPath, outputFile: eggFile)                    
+                    _ = self.zip(currentEggPath, outputFile: eggFile)
                 }
                 
                 recursiveDirectorySearch(appBundlePath, extensions: ["egg"], found: signEgg)
@@ -1073,14 +1091,35 @@ class MainView: NSView, URLSessionDataDelegate, URLSessionDelegate, URLSessionDo
             }
         }
 
-        switch outputFile?.pathExtension.lowercased() {
-        case "ipa":
+        switch (outputFile?.pathExtension.lowercased(), isiOSAppOnTheMac) {
+        case ("ipa", false):
             setStatus("Packaging IPA")
             let zipTask = self.zip(workingDirectory, outputFile: outputFile!)
             if zipTask.status != 0 {
                 setStatus("Error packaging IPA")
             }
-        case "appex":
+        case ("ipa", true):
+            setStatus("Package .app for iOS app on the mac")
+            // Update extension to .app
+            outputFile = outputFile!.stringByDeletingPathExtension.stringByAppendingPathExtension("app")!
+            do {
+                // Copy input file into output directory
+                try fileManager.copyItem(atPath: inputFile, toPath: outputFile!)
+                
+                // Remove internal .app
+                let internalOutputAppPath = outputFile!
+                    .stringByAppendingPathComponent("Wrapper")
+                    .stringByAppendingPathComponent(outputFile!.lastPathComponent)
+                try fileManager.removeItem(atPath: internalOutputAppPath)
+
+                // Copy .app from payloadDirectory to the internal .app
+                try fileManager.copyItem(atPath: payloadDirectory.stringByAppendingPathComponent(outputFile!.lastPathComponent),
+                                         toPath: internalOutputAppPath)
+            } catch let error as NSError {
+                setStatus("Error copying .app bundle to \(outputFile!)")
+                Log.write(error.localizedDescription)
+            }
+        case ("appex", _):
             do {
                 try fileManager.copyItem(atPath: payloadDirectory.stringByAppendingPathComponent(inputFile.lastPathComponent), toPath: outputFile!)
             } catch let error as NSError {
